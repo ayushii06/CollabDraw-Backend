@@ -26,90 +26,198 @@ const io = new Server(server, {
 const rooms = {};
 
 io.on("connection", (socket) => {
+  console.log("🟢 NEW CONNECTION:", socket.id);
 
-  // As someone joins the room, they will be added to users list and also a notification will be sent to all clients in the room
- socket.on("join-room", ({ roomId, name }) => {
-  socket.join(roomId);
-  socket.roomId = roomId;
+  socket.on("join-room", ({ roomId, username, userId }) => {
+    console.log("\n📥 JOIN REQUEST");
+    console.log("socket:", socket.id);
+    console.log("userId:", userId);
+    console.log("roomId:", roomId);
 
-  if (!rooms[roomId]) {
-    rooms[roomId] = {};
-  }
+    socket.join(roomId);
+    socket.roomId = roomId;
+    socket.userId = userId;
 
-  const color = COLORS[Object.keys(rooms[roomId]).length % COLORS.length];
+    if (!rooms[roomId]) {
+      rooms[roomId] = {
+        users: {},
+        elements: [],
+      };
+      console.log("🆕 Created new room:", roomId);
+    }
 
-  const user = {
-    userId: socket.id,
-    name,
-    color,
-  };
+    const room = rooms[roomId];
 
-  rooms[roomId][socket.id] = user;
+    // 🔥 Remove old connection (same userId)
+    Object.keys(room.users).forEach((key) => {
+      if (room.users[key].userId === userId) {
+        console.log("♻️ Removing old connection:", key);
+        delete room.users[key];
+      }
+    });
 
-  // 🔹 notify others that someone joined
-  console.log(user);
-  socket.to(roomId).emit("user-joined", user);
+    const color =
+      COLORS[Object.keys(room.users).length % COLORS.length];
 
-  // 🔹 send updated users list
-  io.to(roomId).emit("room-users", Object.values(rooms[roomId]));
-});
+    const user = {
+      userId,
+      username,
+      color,
+      socketId: socket.id,
+    };
 
-  socket.on("draw-element", (element) => {
-    // console.log("recevied", element);
-    socket.to(socket.roomId).emit("draw", element);
+    room.users[socket.id] = user;
+
+    console.log("✅ User added:", user);
+    console.log("👥 Total users:", Object.keys(room.users).length);
+
+    socket.emit("room-joined", {
+      users: Object.values(room.users),
+      elements: room.elements,
+    });
+
+    socket.to(roomId).emit("user-joined", user);
+
+    io.to(roomId).emit(
+      "room-users",
+      Object.values(room.users)
+    );
+
+    console.log("📦 Current users list:", room.users);
   });
-  socket.on("update-element", (element) => {
-    // console.log("update recevied", element);
-    socket.to(socket.roomId).emit("update", element);
+
+  socket.on("sync-element", ({ roomId, element }) => {
+    console.log("\n✏️ ELEMENT SYNC");
+    console.log("room:", roomId);
+    console.log(element)
+    console.log("elementId:", element.id);
+
+    const room = rooms[roomId];
+    if (!room) {
+      console.log("❌ Room not found");
+      return;
+    }
+
+    const index = room.elements.findIndex(
+      (el) => el.id === element.id
+    );
+
+    if (index === -1) {
+      console.log("➕ New element added");
+      room.elements.push(element);
+    } else {
+      console.log("♻️ Element updated");
+      room.elements[index] = element;
+    }
+
+    socket.to(roomId).emit("element-sync", element);
   });
 
-  socket.on("cursor-move", (data) => {
-    const roomId = socket.roomId;
+  socket.on("delete-element", ({ roomId, id }) => {
+    console.log("\n🗑️ DELETE ELEMENT");
+    console.log("room:", roomId);
+    console.log("elementId:", id);
 
-    if (!roomId) return;
+    const room = rooms[roomId];
+    if (!room) return;
 
-    const user = rooms[roomId]?.[socket.id];
+    room.elements = room.elements.filter(
+      (el) => el.id !== id
+    );
 
-    if (!user) return;
+    socket.to(roomId).emit("element-delete", id);
+  });
+
+  socket.on("cursor-move", ({ roomId, userId, x, y }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+
+    const user = Object.values(room.users).find(
+      (u) => u.userId === userId
+    );
+
+    if (!user) {
+      console.log("⚠️ Cursor user not found:", userId);
+      return;
+    }
 
     socket.to(roomId).emit("cursor-update", {
-      userId: socket.id,
-      name: user.name,
-      color: user.color,
-      x: data.x,
-      y: data.y,
+      user,
+      x,
+      y,
     });
   });
 
-  socket.on("leave-room", () => {
-  const roomId = socket.roomId;
+  socket.on("leave-room", ({ roomId }) => {
+    console.log("\n🚪 LEAVE ROOM");
+    console.log("socket:", socket.id);
+    console.log("userId:", socket.user);
+    // username
+  
+    const room = rooms[roomId];
+    if (!room) return;
 
-  if (!roomId || !rooms[roomId]) return;
+     const user = rooms[roomId]?.users[socket.id];
 
-  const user = rooms[roomId][socket.id];
 
-  delete rooms[roomId][socket.id];
+    delete room.users[socket.id];
 
-  socket.leave(roomId);
+    socket.leave(roomId);
 
-  socket.to(roomId).emit("user-left", user);
+    socket.to(roomId).emit("user-left", user);
 
-  io.to(roomId).emit("room-users", Object.values(rooms[roomId]));
+    io.to(roomId).emit(
+      "room-users",
+      Object.values(room.users)
+    );
 
-  socket.emit("left-room"); // confirmation to the leaving user
-});
+    socket.emit("left-room");
+
+    console.log("👥 Users after leave:", Object.keys(room.users).length);
+
+    if (Object.keys(room.users).length === 0) {
+      console.log("🗑️ Deleting empty room:", roomId);
+      delete rooms[roomId];
+    }
+  });
 
   socket.on("disconnect", () => {
-    const roomId = socket.roomId;
+    console.log("\n🔴 DISCONNECT");
+    console.log("socket:", socket.id);
+    console.log("userId:", socket.userId);
 
-    if (!roomId || !rooms[roomId]) return;
 
-    delete rooms[roomId][socket.id];
+    
+    const { roomId, userId } = socket;
+    const user = rooms[roomId]?.users[socket.id];
 
-    io.to(roomId).emit("room-users", Object.values(rooms[roomId]));
+    if (!roomId || !rooms[roomId]) {
+      console.log("⚠️ Room not found during disconnect");
+      return;
+    }
+
+    const room = rooms[roomId];
+
+    delete room.users[socket.id];
+
+    socket.to(roomId).emit("user-left", user);
+
+    io.to(roomId).emit(
+      "room-users",
+      Object.values(room.users)
+    );
+
+    console.log("👥 Users after disconnect:", Object.keys(room.users).length);
+
+    if (Object.keys(room.users).length === 0) {
+      console.log("🗑️ Deleting empty room:", roomId);
+      delete rooms[roomId];
+    }
+
+    console.log("📦 Current rooms state:", rooms);
   });
 });
 
 server.listen(5000, () => {
-  console.log("Socket server running on 5000");
+  console.log("🚀 Socket server running on 5000");
 });
